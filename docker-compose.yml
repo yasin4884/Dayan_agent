@@ -1,0 +1,240 @@
+# دایان — همه سرویس‌ها با یک دستور:
+#   docker compose up -d --build
+#
+# LM Studio روی میزبان: MODEL_URL=http://host.docker.internal:1234
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: dayan-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dayan}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dayan_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-dayan_db}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - dayan_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  mongo:
+    image: mongo:7
+    container_name: dayan-mongo
+    restart: unless-stopped
+    ports:
+      - "27018:27017"
+    volumes:
+      - dayan_mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: dayan-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - dayan_redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.2
+    container_name: dayan-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - dayan_qdrant_data:/qdrant/storage
+
+  temporal:
+    profiles: ["temporal"]
+    image: temporalio/auto-setup:1.25.2
+    container_name: dayan-temporal
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-dayan}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:-dayan_pass}
+      POSTGRES_SEEDS: postgres
+    ports:
+      - "7233:7233"
+
+  temporal-ui:
+    profiles: ["temporal"]
+    image: temporalio/ui:2.31.2
+    container_name: dayan-temporal-ui
+    restart: unless-stopped
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:8080
+    ports:
+      - "8080:8080"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: dayan-api
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      DEBUG: ${DEBUG:-false}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-dayan}:${POSTGRES_PASSWORD:-dayan_pass}@postgres:5432/${POSTGRES_DB:-dayan_db}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      DB_FALLBACK_SQLITE: "false"
+      MONGO_URI: mongodb://mongo:27017
+      REDIS_URL: redis://redis:6379/0
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_PATH: ""
+      # داخل کانتینر از .env لوکال (127.0.0.1) استفاده نکن
+      TEMPORAL_HOST: host.docker.internal:7233
+      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
+      TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-dayan-tasks}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001,http://localhost:4000,http://127.0.0.1:4000}
+      MODEL_URL: http://host.docker.internal:1234
+      DATA_DIR: /app/data
+      UPLOADS_DIR: /app/data/uploads
+      CMS_PATH: /app/data/cms/site.json
+    ports:
+      - "8000:8000"
+    volumes:
+      - dayan_app_data:/app/data
+      - dayan_hf_cache:/app/.cache/huggingface
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 15
+      start_period: 180s
+
+  temporal-worker:
+    profiles: ["temporal"]
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: dayan-temporal-worker
+    restart: unless-stopped
+    command: ["python", "-m", "temporal.worker"]
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-dayan}:${POSTGRES_PASSWORD:-dayan_pass}@postgres:5432/${POSTGRES_DB:-dayan_db}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      DB_FALLBACK_SQLITE: "false"
+      MONGO_URI: mongodb://mongo:27017
+      REDIS_URL: redis://redis:6379/0
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_PATH: ""
+      TEMPORAL_HOST: temporal:7233
+      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
+      TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-dayan-tasks}
+      MODEL_URL: http://host.docker.internal:1234
+      DATA_DIR: /app/data
+      UPLOADS_DIR: /app/data/uploads
+      CMS_PATH: /app/data/cms/site.json
+    volumes:
+      - dayan_app_data:/app/data
+      - dayan_hf_cache:/app/.cache/huggingface
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - api
+      - temporal
+      - qdrant
+      - redis
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    container_name: dayan-frontend
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      HOSTNAME: 0.0.0.0
+      PORT: "3000"
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_started
+
+  admin:
+    build:
+      context: ./admin
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    container_name: dayan-admin
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      HOSTNAME: 0.0.0.0
+      PORT: "3001"
+    ports:
+      - "3001:3001"
+    depends_on:
+      api:
+        condition: service_started
+
+  developer:
+    build:
+      context: ./developer
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    container_name: dayan-developer
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      HOSTNAME: 0.0.0.0
+      PORT: "4000"
+    ports:
+      - "4000:4000"
+    depends_on:
+      api:
+        condition: service_started
+
+volumes:
+  dayan_pg_data:
+  dayan_mongo_data:
+  dayan_redis_data:
+  dayan_qdrant_data:
+  dayan_app_data:
+  dayan_hf_cache:

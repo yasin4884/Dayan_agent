@@ -1,0 +1,36 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HF_HOME=/app/.cache/huggingface \
+    TRANSFORMERS_CACHE=/app/.cache/huggingface
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    libjpeg62-turbo \
+    zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+COPY ai_model ./ai_model
+COPY backend ./backend
+COPY core ./core
+COPY databases ./databases
+COPY temporal ./temporal
+COPY data/cms/site.json /app/seed/cms/site.json
+COPY scripts/docker-api-entrypoint.sh /app/docker-api-entrypoint.sh
+
+RUN sed -i 's/\r$//' /app/docker-api-entrypoint.sh \
+    && chmod +x /app/docker-api-entrypoint.sh \
+    && mkdir -p /app/data/cms /app/data/uploads /app/data/memory /app/data/logs /app/data/dev /app/.cache/huggingface
+
+EXPOSE 8000
+
+ENTRYPOINT ["/app/docker-api-entrypoint.sh"]
+CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

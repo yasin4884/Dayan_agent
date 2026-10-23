@@ -1,0 +1,53 @@
+# ===== Env و رمزها =====
+.env
+.env.local
+.env.*
+!.env.example
+
+# ===== Python =====
+.venv/
+venv/
+*.pyc
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ===== Node =====
+node_modules/
+.next/
+
+# ===== داده‌های محلی =====
+data/dayan.db
+data/dayan.db-*
+data/qdrant/
+data/uploads/
+data/memory/
+data/logs/
+data/_*.json
+data/_*.txt
+
+# ===== لاگ =====
+*.log
+
+# ===== فایل‌های اجرایی و سنگین (حد گیت‌هاب: 100MB) =====
+tools/temporal-cli/
+*.exe
+
+# ===== همه‌ی عکس‌ها =====
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.bmp
+*.ico
+*.svg
+
+# ===== استثنا: عکس‌های README =====
+!docs/screenshots/
+!docs/screenshots/*
+
+# ===== سیستم =====
+.DS_Store
+Thumbs.db
